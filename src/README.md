@@ -18,16 +18,28 @@ A FastAPI application that enables Slalom consultants to register their capabili
 1. Install the dependencies:
 
    ```
-   pip install fastapi uvicorn
+   pip install -r ../requirements.txt
    ```
 
-2. Run the application:
+2. Initialize the database schema via Alembic:
+
+   ```
+   alembic upgrade head
+   ```
+
+   Optional: override the database target with an environment variable.
+
+   ```
+   export DATABASE_URL=sqlite:///./src/data/capabilities.db
+   ```
+
+3. Run the application:
 
    ```
    python app.py
    ```
 
-3. Open your browser and go to:
+4. Open your browser and go to:
    - API documentation: http://localhost:8000/docs
    - Alternative documentation: http://localhost:8000/redoc
    - Capabilities Dashboard: http://localhost:8000/
@@ -61,7 +73,18 @@ The application uses a consulting-focused data model:
    - Certifications
    - Availability
 
-All data is currently stored in memory for this learning exercise. In a production environment, this would be backed by a robust database system.
+Data now persists in a local SQLite database by default (`src/data/capabilities.db`) and can be configured via `DATABASE_URL` for other environments.
+
+## Database Migrations
+
+Use Alembic for all schema changes:
+
+```
+alembic revision -m "describe change"
+alembic upgrade head
+```
+
+Avoid ad hoc SQL updates so schema evolution remains repeatable across environments.
 
 ## Future Enhancements
 

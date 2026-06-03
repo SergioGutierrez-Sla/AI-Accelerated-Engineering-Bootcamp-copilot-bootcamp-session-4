@@ -5,11 +5,15 @@ A FastAPI application that enables Slalom consultants to register their
 capabilities and manage consulting expertise across the organization.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import os
 from pathlib import Path
+from sqlalchemy.orm import Session
+
+from database import SessionLocal, init_db
+from models import Capability, CapabilityConsultant
 
 app = FastAPI(title="Slalom Capabilities Management API",
               description="API for managing consulting capabilities and consultant expertise")
@@ -19,8 +23,7 @@ current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
           "static")), name="static")
 
-# In-memory capabilities database
-capabilities = {
+INITIAL_CAPABILITIES = {
     "Cloud Architecture": {
         "description": "Design and implement scalable cloud solutions using AWS, Azure, and GCP",
         "practice_area": "Technology",
@@ -105,55 +108,144 @@ capabilities = {
 }
 
 
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def seed_initial_capabilities(db: Session) -> None:
+    if db.query(Capability).first():
+        return
+
+    for capability_name, payload in INITIAL_CAPABILITIES.items():
+        capability = Capability(
+            name=capability_name,
+            description=payload["description"],
+            practice_area=payload["practice_area"],
+            skill_levels=payload["skill_levels"],
+            certifications=payload["certifications"],
+            industry_verticals=payload["industry_verticals"],
+            capacity=payload["capacity"],
+        )
+        db.add(capability)
+        db.flush()
+
+        for consultant_email in payload["consultants"]:
+            db.add(
+                CapabilityConsultant(
+                    capability_id=capability.id,
+                    email=consultant_email,
+                )
+            )
+
+    db.commit()
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    init_db()
+    with SessionLocal() as db:
+        seed_initial_capabilities(db)
+
+
+def build_capabilities_response(db: Session) -> dict:
+    response = {}
+    capabilities = db.query(Capability).all()
+    for capability in capabilities:
+        response[capability.name] = {
+            "description": capability.description,
+            "practice_area": capability.practice_area,
+            "skill_levels": capability.skill_levels,
+            "certifications": capability.certifications,
+            "industry_verticals": capability.industry_verticals,
+            "capacity": capability.capacity,
+            "consultants": [c.email for c in capability.consultants],
+        }
+    return response
+
+
 @app.get("/")
 def root():
     return RedirectResponse(url="/static/index.html")
 
 
 @app.get("/capabilities")
-def get_capabilities():
-    return capabilities
+def get_capabilities(db: Session = Depends(get_db)):
+    return build_capabilities_response(db)
 
 
 @app.post("/capabilities/{capability_name}/register")
-def register_for_capability(capability_name: str, email: str):
+def register_for_capability(
+    capability_name: str,
+    email: str,
+    db: Session = Depends(get_db),
+):
     """Register a consultant for a capability"""
-    # Validate capability exists
-    if capability_name not in capabilities:
+    capability = (
+        db.query(Capability)
+        .filter(Capability.name == capability_name)
+        .first()
+    )
+    if capability is None:
         raise HTTPException(status_code=404, detail="Capability not found")
 
-    # Get the specific capability
-    capability = capabilities[capability_name]
-
-    # Validate consultant is not already registered
-    if email in capability["consultants"]:
+    already_registered = (
+        db.query(CapabilityConsultant)
+        .filter(
+            CapabilityConsultant.capability_id == capability.id,
+            CapabilityConsultant.email == email,
+        )
+        .first()
+    )
+    if already_registered is not None:
         raise HTTPException(
             status_code=400,
             detail="Consultant is already registered for this capability"
         )
 
-    # Add consultant
-    capability["consultants"].append(email)
+    db.add(CapabilityConsultant(capability_id=capability.id, email=email))
+    db.commit()
     return {"message": f"Registered {email} for {capability_name}"}
 
 
 @app.delete("/capabilities/{capability_name}/unregister")
-def unregister_from_capability(capability_name: str, email: str):
+def unregister_from_capability(
+    capability_name: str,
+    email: str,
+    db: Session = Depends(get_db),
+):
     """Unregister a consultant from a capability"""
-    # Validate capability exists
-    if capability_name not in capabilities:
+    capability = (
+        db.query(Capability)
+        .filter(Capability.name == capability_name)
+        .first()
+    )
+    if capability is None:
         raise HTTPException(status_code=404, detail="Capability not found")
 
-    # Get the specific capability
-    capability = capabilities[capability_name]
-
-    # Validate consultant is registered
-    if email not in capability["consultants"]:
+    consultant_registration = (
+        db.query(CapabilityConsultant)
+        .filter(
+            CapabilityConsultant.capability_id == capability.id,
+            CapabilityConsultant.email == email,
+        )
+        .first()
+    )
+    if consultant_registration is None:
         raise HTTPException(
             status_code=400,
             detail="Consultant is not registered for this capability"
         )
 
-    # Remove consultant
-    capability["consultants"].remove(email)
+    db.delete(consultant_registration)
+    db.commit()
     return {"message": f"Unregistered {email} from {capability_name}"}
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8000)
